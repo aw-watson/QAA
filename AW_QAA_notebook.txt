@@ -1,0 +1,388 @@
+André Watson
+FastQC and sequencing quality assessment.
+Summer 2023, Bi623
+
+-------------
+11-Sep-2023
+-------------
+I'm looking at two pairs of files:
+    10_2G_both_S8_L008_R1_001.fastq.gz
+    10_2G_both_S8_L008_R2_001.fastq.gz
+    31_4F_fox_S22_L008_R1_001.fastq.gz
+    31_4F_fox_S22_L008_R2_001.fastq.gz
+
+Using FastQC for some assessments.
+
+*************
+FastQC setup
+*************
+
+module spider fastqc
+module load fastqc /0.11.5
+
+*******************************
+
+We want to produce per-base quality score distributions and per-base N content.
+Let's try running it (just specifying output dir) and see what happens.
+
+fastqc -o /projects/bgmp/apwat/bioinfo/Bi623/QAA \
+10_2G_both_S8_L008_R1_001.fastq.gz \
+10_2G_both_S8_L008_R2_001.fastq.gz \
+31_4F_fox_S22_L008_R1_001.fastq.gz \
+31_4F_fox_S22_L008_R2_001.fastq.gz
+
+Immediate notes: Threading might be useful next time. Produces html files in the reports, so let's take a look.
+Reports contain all necessary graphs.
+
+We'll need timing information for completeness's sake, so:
+
+************************
+FastQC bash command
+***********************
+/usr/bin/time -v fastqc -o /projects/bgmp/apwat/bioinfo/Bi623/QAA \
+10_2G_both_S8_L008_R1_001.fastq.gz \
+10_2G_both_S8_L008_R2_001.fastq.gz \
+31_4F_fox_S22_L008_R1_001.fastq.gz \
+31_4F_fox_S22_L008_R2_001.fastq.gz
+
+Percent of CPU this job got: 99%
+Elapsed (wall clock) time (h:mm:ss or m:ss): 14:56.41
+Maximum resident set size (kbytes): 228520
+											
+*************************************
+
+Generated my own plots for comparison: for details on that script, see
+
+https://github.com/aw-watson/Demultiplex/blob/master/2023_Bi622_Demux_notebook_AW.txt
+
+under "Quality Distribution Script Details".
+
+Rewrote a shell wrapper to run it on the proper files, and scheduled an sbatch job.
+
+*************
+Job details
+**************
+Wrapper filename: own_qual.sh
+Successful job: 56562
+
+both_R1:
+	Percent CPU: 99%
+	Elapsed time: 30:02.94
+	Maximum resident set size: 92536 kbytes
+both_R2:
+	Percent CPU: 99%
+	Elapsed time: 32:08.70
+	Maximum resident set size: 92636 kbytes
+fox_R1:
+	Percent CPU: 91%
+	Elapsed time: 1:25.79
+	Maximum resident set size: 92656 kbytes
+fox_R2:
+	Percent CPU: 99%
+	Elapsed time: 1:23.02
+	Maximum resident set size: 92604 kbytes
+**************************************************************
+
+Let's set up our software for the next parts of this assignment.
+
+**************************
+conda environment creation
+***************************
+conda create -n QAA
+conda activate QAA
+mamba install htseq
+mamba install matplotlib
+mamba install numpy **unnecessary, apparently
+mamba install star
+mamba install cutadapt
+mamba install Trimmomatic
+***********************************************
+
+We'll start processing these reads with cutadapt.
+Looking at the help...we'll need to actually identify the adapters we want removed first.
+Let's see if we can ID them off of the FastQC results.
+
+-------------
+12-Sep-2023
+------------
+
+FastQC results show a rising concentration of "Illumina universal adapter" near the end of reads.
+Only shows up for the two 31_4_F[...] files, however.
+Looking up FastQC's documentation, looks like the adapter sequence is AGATCGGAAGAG.
+
+****************
+Confirm adapters
+*****************
+We need to search for that adapter in the zipped files.
+
+ cd /projects/bgmp/shared/2017_sequencing/demultiplexed/
+ zcat ./31_4F_fox_S22_L008_R1_001.fastq.gz | grep "AGATCGGAAGAG" --color='always'| head
+
+This will highlight the sequence for us so we can see where it is.
+Adapter shows up! Always has the same sequence after it, so our particular adapters may have been longer.
+Always near the end, which makes sense for adapters.
+Now to check the second sequence read. Hopefully our library design has set up adapters to read the same in both reads.
+
+ zcat ./31_4F_fox_S22_L008_R2_001.fastq.gz | grep "AGATCGGAAGAG" --color='always'| head
+
+Yep, shows up in the reverse reads as well! Good, we won't need to complement the sequence.
+Let's see counts.
+
+ zcat ./31_4F_fox_S22_L008_R2_001.fastq.gz | grep "AGATCGGAAGAG" --color='always'| wc -l 
+ 260180
+ zcat ./31_4F_fox_S22_L008_R2_001.fastq.gz | wc -l
+ 15153372
+
+so about 1/15 of reads (recall only 1/4 of FASTQ lines are sequence) in that file have adapter
+that needs to be trimmed. That's a bit high! Glad we're trimming.
+
+Checking for adapters in the 10_2G[...] files:
+
+ zcat ./10_2G_both_S8_L008_R1_001.fastq.gz | grep "AGATCGGAAGAG" --color='always' | head
+ zcat ./10_2G_both_S8_L008_R2_001.fastq.gz | grep "AGATCGGAAGAG" --color='always' | head
+
+Yes, we have adapters that need trimming in both.
+Probably less than the other files, since it didn't get flagged by FastQC,
+but still worth cleaning.
+
+Double-checking against the given adapter sequences, since we know what we're looking for.
+Given adapter sequences are:
+ AGATCGGAAGAGCACACGTCTGAACTCCAGTCA for the forward reads
+ AGATCGGAAGAGCGTCGTGTAGGGAAAGAGTGT for the reverse reads
+
+Interesting! Looks like the adapters are designed to be distinct, which I should have noticed earlier, but only after
+the first 12/13 bases.
+
+******************************************************************************************************************
+
+These are Illumina paired-end reads, so we'll use paired options for...
+
+********
+cutadapt
+*********
+ cd /projects/bgmp/shared/2017_sequencing/demultiplexed
+
+/usr/bin/time -v cutadapt -a AGATCGGAAGAG -A AGATCGGAAGAG \
+-o /projects/bgmp/apwat/bioinfo/Bi623/QAA/cutadapt/31_4F_fox_S22_L008_R1_001_cadapt.fastq.gz \
+-p /projects/bgmp/apwat/bioinfo/Bi623/QAA/cutadapt/31_4F_fox_S22_L008_R2_001_cadapt.fastq.gz \
+./31_4F_fox_S22_L008_R1_001.fastq.gz \
+./31_4F_fox_S22_L008_R2_001.fastq.gz \
+>/projects/bgmp/apwat/bioinfo/Bi623/QAA/cutadapt/fox_summary.txt
+
+Percent CPU: 99%
+Elapsed time: 2:16.29
+Max. resident set size: 39240 kbytes
+
+/usr/bin/time -v cutadapt -a AGATCGGAAGAG -A AGATCGGAAGAG \
+-o /projects/bgmp/apwat/bioinfo/Bi623/QAA/cutadapt/10_2G_both_S8_L008_R1_001_cadapt.fastq.gz \
+-p /projects/bgmp/apwat/bioinfo/Bi623/QAA/cutadapt/10_2G_both_S8_L008_R2_001_cadapt.fastq.gz \
+./10_2G_both_S8_L008_R1_001.fastq.gz \
+./10_2G_both_S8_L008_R2_001.fastq.gz \
+>/projects/bgmp/apwat/bioinfo/Bi623/QAA/cutadapt/both_summary.txt
+
+Percent CPU: 99%
+Elapsed time: 48:54.64
+Max. resident set size: 46472 kbytes
+
+********************************************************************************************
+
+Percent of reads from <file> that were trimmed:
+	both...R1: 2157562/81477069 =  2.648%
+	both...R2: 2828670/81477069 =  3.472%
+	fox...R1:  456168/3788343   = 12.04 %
+	fox...R2:  483310/3788343   = 12.76 %
+
+
+Moving on to trimmomatic!
+Processing step options are specified in https://github.com/aw-watson/QAA, part 2.6 of the README file.
+We're running paired-end. We can specify multi-threading if we want.
+
+******************
+Trimmomatic
+*****************
+
+srun --account=bgmp --partition=bgmp --cpus-per-task=4 --pty bash
+conda activate QAA
+cd /projects/bgmp/apwat/bioinfo/Bi623/QAA
+
+/usr/bin/time -v trimmomatic PE -threads 4 \
+./cutadapt/10_2G_both_S8_L008_R1_001_cadapt.fastq.gz \
+./cutadapt/10_2G_both_S8_L008_R2_001_cadapt.fastq.gz \
+./trimmed/both_R1_paired_trimmed.fastq.gz \
+./trimmed/both_R1_unpaired_trimmed.fastq.gz \
+./trimmed/both_R2_paired_trimmed.fastq.gz \
+./trimmed/both_R2_unpaired_trimmed.fastq.gz \
+LEADING:3 \
+TRAILING:3 \
+SLIDINGWINDOW:5:15 \
+MINLEN:35
+
+Percent CPU: 210%
+Elapsed time: 31:38.22
+Maximum resident set size: 402404 kbytes
+Both reads surviving trimming: 77492771 (95.11%)
+Forward reads only surviving trimming: 3885972 (4.77%)
+Reverse reads only surviving trimming: 60828 (0.07%)
+Reads dropped: 37498 (0.05%)
+
+/usr/bin/time -v trimmomatic PE -threads 4 \
+./cutadapt/31_4F_fox_S22_L008_R1_001_cadapt.fastq.gz \
+./cutadapt/31_4F_fox_S22_L008_R2_001_cadapt.fastq.gz \
+./trimmed/fox_R1_paired_trimmed.fastq.gz \
+./trimmed/fox_R1_unpaired_trimmed.fastq.gz \
+./trimmed/fox_R2_paired_trimmed.fastq.gz \
+./trimmed/fox_R2_unpaired_trimmed.fastq.gz \
+LEADING:3 \
+TRAILING:3 \
+SLIDINGWINDOW:5:15 \
+MINLEN:35
+
+Percent CPU: 214%
+Elapsed time: 1:24.80
+Maximum resident set size: 392912 kbytes
+Both reads surviving trimming: 3597690 (94.97%)
+Forward reads only surviving trimming: 152564 (4.03%)
+Reverse reads only surviving trimming: 3869 (0.10%)
+Reads dropped: 34220 (0.90%)
+
+--------------
+13-Sep-2023
+--------------
+Let's work on alignment. We'll be getting our reference genome and GTF from Ensembl:
+FASTA: https://ftp.ensembl.org/pub/release-110/fasta/mus_musculus/dna/Mus_musculus.GRCm39.dna_rm.primary_assembly.fa.gz
+GTF: https://ftp.ensembl.org/pub/release-110/gtf/mus_musculus/Mus_musculus.GRCm39.110.chr.gtf.gz
+
+**************
+STAR alignment
+**************
+
+srun --account=bgmp --partition=bgmp --cpus-per-task=8 --pty bash
+
+cd /projects/bgmp/apwat/bioinfo/Bi623/QAA/star
+
+conda activate QAA
+
+/usr/bin/time -v STAR --runThreadN 8 --runMode genomeGenerate \
+--genomeDir /projects/bgmp/apwat/bioinfo/Bi623/QAA/star/Mus_musculus.GRCm39.ens110.STAR_2.7.10b \
+--genomeFastaFiles /projects/bgmp/apwat/bioinfo/Bi623/QAA/star/Mus_musculus.GRCm39.dna_rm.primary_assembly.fa \
+--sjdbGTFfile /projects/bgmp/apwat/bioinfo/Bi623/QAA/star/Mus_musculus.GRCm39.110.chr.gtf
+
+Percent CPU: 401%
+Elapsed time: 10:52.11
+Maximum resident set size: 29110208 kbytes
+
+/usr/bin/time -v STAR --runThreadN 8 --runMode alignReads \
+--outFilterMultimapNmax 3 \
+--outSAMunmapped Within KeepPairs \
+--alignIntronMax 1000000 --alignMatesGapMax 1000000 \
+--readFilesCommand zcat \
+--readFilesIn /projects/bgmp/apwat/bioinfo/Bi623/QAA/trimmed/both_R1_paired_trimmed.fastq.gz \
+/projects/bgmp/apwat/bioinfo/Bi623/QAA/trimmed/both_R2_paired_trimmed.fastq.gz \
+--genomeDir /projects/bgmp/apwat/bioinfo/Bi623/QAA/star/Mus_musculus.GRCm39.ens110.STAR_2.7.10b \
+--outFileNamePrefix ./b
+
+Percent CPU: 728%
+Elapsed time: 11:50.28
+Maximum resident set size: 17855572 kbytes
+
+/usr/bin/time -v STAR --runThreadN 8 --runMode alignReads \
+--outFilterMultimapNmax 3 \
+--outSAMunmapped Within KeepPairs \
+--alignIntronMax 1000000 --alignMatesGapMax 1000000 \
+--readFilesCommand zcat \
+--readFilesIn /projects/bgmp/apwat/bioinfo/Bi623/QAA/trimmed/fox_R1_paired_trimmed.fastq.gz \
+/projects/bgmp/apwat/bioinfo/Bi623/QAA/trimmed/fox_R2_paired_trimmed.fastq.gz \
+--genomeDir /projects/bgmp/apwat/bioinfo/Bi623/QAA/star/Mus_musculus.GRCm39.ens110.STAR_2.7.10b \
+--outFileNamePrefix ./f
+
+Percent CPU: 498%
+Elapsed time: 1:01.37
+Maximum resident set size: 17670244
+*************************************************************************************************
+
+And now we count how many reads mapped to features.
+
+Experimenting with just setting up an interactive command. Takes a long time and we have 4 of these to run.
+Let's set up a wrapper once we get a clearer idea of what output looks like.
+
+************
+htseq-count
+************
+job ID: 68702
+cd /projects/bgmp/apwat/bioinfo/Bi623/QAA/htseq
+
+/usr/bin/time -v htseq-count --stranded=yes \
+../star/bAligned.out.sam ../star/Mus_musculus.GRCm39.110.chr.gtf \
+>./both_counts_stranded.txt
+
+Percent CPU: 99%
+Elapsed time: 2:22:52
+Maximum resident set size: 173152 kbytes
+
+/usr/bin/time -v htseq-count --stranded=reverse \
+../star/bAligned.out.sam ../star/Mus_musculus.GRCm39.110.chr.gtf \
+>./both_counts_reverse_stranded.txt
+
+Percent CPU: 99%
+Elapsed time: 2:32:05
+Maximum resident set size: 177180 kbytes
+
+/usr/bin/time -v htseq-count --stranded=yes \
+../star/fAligned.out.sam ../star/Mus_musculus.GRCm39.110.chr.gtf \
+>./fox_counts_stranded.txt
+
+Percent CPU: 99%
+Elapsed time: 8:09.97
+Maximum resident set size: 172884 kbytes
+
+/usr/bin/time -v htseq-count --stranded=reverse \
+../star/fAligned.out.sam ../star/Mus_musculus.GRCm39.110.chr.gtf \
+>./fox_counts_reverse_stranded.txt
+
+Percent CPU: 99%
+Elapsed time: 8:22.54
+Maximum resident st size: 170396 kbytes
+
+*********************************************************************************
+
+------------
+15-Sep-2023
+------------
+
+One last little bit of analysis! We've previously done some work to figure out how many reads map to a feature.
+Here's the command:
+awk '$1~"ENSMUS" {acc_feat+=$2} {acc_tot+=$2} END {print(acc_feat/acc_tot)}' <GENECOUNT FILE>
+
+I've checked, and the "ENSMUS" prefix will work for these files.
+
+
+Looking over requirements, we also need to get the distribution of trimmed read lengths.
+We have some previous work on this, but we'll need to check that it's appropriate to use.
+Using head, it looks like the FASTQ header lines start with "@", so we can grep for those.
+
+zcat <TRIMMED READS>.fastq.gz | grep -A 1 --no-group-separator "^@" |grep -v "^@"| \
+awk '{print(length($0))}' > <OUTPUT FILENAME>.txt
+... and then read it into R? Hopefully no crashes.
+
+We also need to confirm mapped and unmapped reads to our alignment out of our SAM file.
+I've adjusted our sam_parser from PS8 to take an argument for input filename.
+Wrapping and running on both SAM files.
+
+******************
+Wrapper details
+*******************
+Name: qaa_map_counts.sh
+Job ID: 72119
+./sam_parser.py -f ./star/fAligned.out.sam:
+Percent CPU: 92%
+Elapsed time: 9.88 s
+Maximum resident set size: 11276 kbytes
+
+./sam_parser.py -f ./star/bAligned.out.sam:
+Percent CPU: 99%
+Elapsed time: 3:22.29
+Maximum resident set size: 9244 kbytes
+
+************************************************************
+
+
