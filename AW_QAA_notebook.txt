@@ -385,4 +385,151 @@ Maximum resident set size: 9244 kbytes
 
 ************************************************************
 
+-----------
+02-Jan-2023
+-----------
+Reworking this. Updated my quality plots to have a larger font size.
+Rerunning the pipeline from cutadapt, using the longer adapter sequences.
 
+srun --account=bgmp --partition=bgmp --cpus-per-task=8 --pty bash
+
+ cd /projects/bgmp/shared/2017_sequencing/demultiplexed
+
+/usr/bin/time -v cutadapt -a AGATCGGAAGAGCACACGTCTGAACTCCAGTCA -A AGATCGGAAGAGCGTCGTGTAGGGAAAGAGTGT \
+-o /projects/bgmp/apwat/bioinfo/Bi623/QAA/cutadapt/31_4F_fox_S22_L008_R1_001_cadapt.fastq.gz \
+-p /projects/bgmp/apwat/bioinfo/Bi623/QAA/cutadapt/31_4F_fox_S22_L008_R2_001_cadapt.fastq.gz \
+./31_4F_fox_S22_L008_R1_001.fastq.gz \
+./31_4F_fox_S22_L008_R2_001.fastq.gz \
+>/projects/bgmp/apwat/bioinfo/Bi623/QAA/cutadapt/fox_summary.txt
+
+Percent CPU: 98%
+Elapsed time: 1:28.18
+Max. resident set size: 39336 kbytes
+
+/usr/bin/time -v cutadapt -a AGATCGGAAGAGCACACGTCTGAACTCCAGTCA -A AGATCGGAAGAGCGTCGTGTAGGGAAAGAGTGT \
+-o /projects/bgmp/apwat/bioinfo/Bi623/QAA/cutadapt/10_2G_both_S8_L008_R1_001_cadapt.fastq.gz \
+-p /projects/bgmp/apwat/bioinfo/Bi623/QAA/cutadapt/10_2G_both_S8_L008_R2_001_cadapt.fastq.gz \
+./10_2G_both_S8_L008_R1_001.fastq.gz \
+./10_2G_both_S8_L008_R2_001.fastq.gz \
+>/projects/bgmp/apwat/bioinfo/Bi623/QAA/cutadapt/both_summary.txt
+
+Percent CPU: 99%
+Elapsed time: 30:43.55
+Max. resident set size: 47936 kbytes
+
+********************************************************************************************
+
+Percent of reads from <file> that were trimmed:
+	both...R1: 2131954/81477069 =  2.617%
+	both...R2: 2770901/81477069 =  3.401%
+	fox...R1:  456168/3788343   = 12.04 %
+	fox...R2:  482503/3788343   = 12.74 %
+
+
+cd /projects/bgmp/apwat/bioinfo/Bi623/QAA
+
+/usr/bin/time -v trimmomatic PE -threads 4 \
+./cutadapt/10_2G_both_S8_L008_R1_001_cadapt.fastq.gz \
+./cutadapt/10_2G_both_S8_L008_R2_001_cadapt.fastq.gz \
+./trimmed/both_R1_paired_trimmed.fastq.gz \
+./trimmed/both_R1_unpaired_trimmed.fastq.gz \
+./trimmed/both_R2_paired_trimmed.fastq.gz \
+./trimmed/both_R2_unpaired_trimmed.fastq.gz \
+LEADING:3 \
+TRAILING:3 \
+SLIDINGWINDOW:5:15 \
+MINLEN:35
+
+Percent CPU: 213%
+Elapsed time: 30:35.37
+Maximum resident set size: 399740 kbytes
+Both reads surviving trimming: 77520903 (95.14%)
+Forward reads only surviving trimming: 3865369 (4.74%)
+Reverse reads only surviving trimming: 53290 (0.07%)
+Reads dropped: 37507 (0.05%)
+
+/usr/bin/time -v trimmomatic PE -threads 4 \
+./cutadapt/31_4F_fox_S22_L008_R1_001_cadapt.fastq.gz \
+./cutadapt/31_4F_fox_S22_L008_R2_001_cadapt.fastq.gz \
+./trimmed/fox_R1_paired_trimmed.fastq.gz \
+./trimmed/fox_R1_unpaired_trimmed.fastq.gz \
+./trimmed/fox_R2_paired_trimmed.fastq.gz \
+./trimmed/fox_R2_unpaired_trimmed.fastq.gz \
+LEADING:3 \
+TRAILING:3 \
+SLIDINGWINDOW:5:15 \
+MINLEN:35
+
+Percent CPU: 214%
+Elapsed time: 1:22.82
+Maximum resident set size: 393256 kbytes
+Both reads surviving trimming: 3597908 (94.97%)
+Forward reads only surviving trimming: 151039 (3.99%)
+Reverse reads only surviving trimming: 2965 (0.08%)
+Reads dropped: 36431 (0.96%)
+
+
+For alignment, we're using a non-masked primary assembly file from Ensembl:
+https://ftp.ensembl.org/pub/release-110/fasta/mus_musculus/dna/Mus_musculus.GRCm39.dna.primary_assembly.fa.gz
+Same gene feature file.
+
+/usr/bin/time -v STAR --runThreadN 8 --runMode genomeGenerate \
+--genomeDir /projects/bgmp/apwat/bioinfo/Bi623/QAA/star/Mus_musculus.GRCm39.ens110.STAR_2.7.10b \
+--genomeFastaFiles /projects/bgmp/apwat/bioinfo/Bi623/QAA/star/Mus_musculus.GRCm39.dna.primary_assembly.fa \
+--sjdbGTFfile /projects/bgmp/apwat/bioinfo/Bi623/QAA/star/Mus_musculus.GRCm39.110.chr.gtf
+
+Percent CPU: 503%
+Elapsed time: 15:43.43
+Maximum resident set size: 32380344 kbytes
+
+/usr/bin/time -v STAR --runThreadN 8 --runMode alignReads \
+--outFilterMultimapNmax 3 \
+--outSAMunmapped Within KeepPairs \
+--alignIntronMax 1000000 --alignMatesGapMax 1000000 \
+--readFilesCommand zcat \
+--readFilesIn /projects/bgmp/apwat/bioinfo/Bi623/QAA/trimmed/both_R1_paired_trimmed.fastq.gz \
+/projects/bgmp/apwat/bioinfo/Bi623/QAA/trimmed/both_R2_paired_trimmed.fastq.gz \
+--genomeDir /projects/bgmp/apwat/bioinfo/Bi623/QAA/star/Mus_musculus.GRCm39.ens110.STAR_2.7.10b \
+--outFileNamePrefix ./b
+
+Percent CPU: 694%
+Elapsed time: 8:06.36
+Maximum resident set size: 27534536 kbytes
+
+/usr/bin/time -v STAR --runThreadN 8 --runMode alignReads \
+--outFilterMultimapNmax 3 \
+--outSAMunmapped Within KeepPairs \
+--alignIntronMax 1000000 --alignMatesGapMax 1000000 \
+--readFilesCommand zcat \
+--readFilesIn /projects/bgmp/apwat/bioinfo/Bi623/QAA/trimmed/fox_R1_paired_trimmed.fastq.gz \
+/projects/bgmp/apwat/bioinfo/Bi623/QAA/trimmed/fox_R2_paired_trimmed.fastq.gz \
+--genomeDir /projects/bgmp/apwat/bioinfo/Bi623/QAA/star/Mus_musculus.GRCm39.ens110.STAR_2.7.10b \
+--outFileNamePrefix ./f
+
+Percent CPU: 532%
+Elapsed time: 0:33.01
+Maximum resident set size: 27352236 kbytes
+
+sbatch ./htseq_counts_wrapper.sh
+
+job ID: 1915524
+Elapsed time(s): 1:18:58 + 1:22:44 + 4:32.27 + 4:41.53
+
+Grabbing read length distributions:
+zcat <TRIMMED READS>.fastq.gz | grep -A 1 --no-group-separator "^@" |grep -v "^@"| awk '{print(length($0))}' > <OUTPUT FILENAME>.txt
+
+Confirming mapped and unmapped read counts:
+sbatch ./qaa_map_counts.sh
+
+Job ID: 1915887
+(fox)
+Percent CPU: 98%
+Elapsed time: 8.87
+Max. resident set size: 12960 kbytes
+(both)
+Percent CPU: 99%
+Elapsed time: 3:03.42
+Max. resident set size: 14544 kbytes
+
+How many reads map to features?
+awk '$1~"ENSMUS" {acc_feat+=$2} {acc_tot+=$2} END {print(acc_feat/acc_tot)}' <GENECOUNT FILE>
